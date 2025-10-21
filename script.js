@@ -381,9 +381,42 @@ function hitungJarak(lat1, lon1, lat2, lon2) {
     return R * c;
 }
 
-function createNotification(id_user, role, message) {
+// FUNGSI NOTIFIKASI BARU - TERINTEGRASI DATABASE
+async function createNotification(id_user, role, message) {
+    // Jangan buat notif untuk diri sendiri
     if (currentUser && currentUser.id === id_user && currentRole === role) return;
-    data.notifikasi.push({ id: Date.now(), id_user, role, message, read: false, timestamp: new Date() });
+    
+    try {
+        const formData = new FormData();
+        formData.append('id_user', id_user);
+        formData.append('role', role);
+        formData.append('message', message);
+        
+        const response = await fetch('save_notifikasi.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            // Tambahkan ke data lokal
+            data.notifikasi.push({ 
+                id: result.id, 
+                id_user, 
+                role, 
+                message, 
+                read: false, 
+                timestamp: new Date().toISOString()
+            });
+            
+            // Update badge jika notif untuk user saat ini
+            renderNotificationBell();
+        }
+        
+    } catch (error) {
+        console.error('Error creating notification:', error);
+    }
 }
 
 function renderNotificationBell() {
@@ -414,11 +447,30 @@ function renderNotifList() {
     dropdown.innerHTML = html;
 }
 
-function markNotifAsRead(notifId) {
+async function markNotifAsRead(notifId) {
     const notif = data.notifikasi.find(n => n.id === notifId);
-    if (notif) notif.read = true;
-    renderNotificationBell();
-    renderNotifList();
+    if (!notif || notif.read) return;
+    
+    try {
+        const formData = new FormData();
+        formData.append('id', notifId);
+        
+        const response = await fetch('update_notifikasi.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            notif.read = true;
+            renderNotificationBell();
+            renderNotifList();
+        }
+        
+    } catch (error) {
+        console.error('Error marking notification as read:', error);
+    }
 }
 
 function renderPengumumanSiswa() {
@@ -602,6 +654,9 @@ async function buatTugas() {
                 file: '',
                 submissions: []
             });
+            
+            // Kirim notifikasi ke semua siswa di kelas
+            createNotification("semua", "siswa", `Tugas baru: ${judul} - ${mapel}`);
             
             document.getElementById("tugas-mapel").value = "";
             document.getElementById("tugas-judul").value = "";
@@ -842,6 +897,7 @@ function renderAdminAbsensi() {
     container.innerHTML = html;
 }
 
+// FUNGSI MANAJEMEN ADMIN - DENGAN FITUR BARU
 function renderAdminManajemen() {
     const container = document.getElementById("Manajemen");
     container.innerHTML = `
@@ -865,9 +921,38 @@ function renderAdminManajemen() {
         </div>
         <div class="dashboard-section">
             <h4>👨‍🏫 Manajemen Guru</h4>
+            <div class="form-container">
+                <h5>Tambah Guru Baru</h5>
+                <input type="text" id="new-guru-nama" placeholder="Nama Guru">
+                <input type="email" id="new-guru-email" placeholder="Email (opsional)">
+                <input type="password" id="new-guru-pass" placeholder="Password">
+                <button onclick="tambahGuru()">Tambah Guru</button>
+            </div>
             <table>
-                <tr><th>ID</th><th>Nama</th><th>Email</th></tr>
-                ${data.users.gurus.map(g => `<tr><td>${g.id}</td><td>${g.nama}</td><td>${g.email}</td></tr>`).join("")}
+                <tr><th>ID</th><th>Nama</th><th>Email</th><th>Aksi</th></tr>
+                ${data.users.gurus.map(g => `<tr><td>${g.id}</td><td>${g.nama}</td><td>${g.email || '-'}</td><td><button class="small-btn delete" onclick="hapusGuru(${g.id})">Hapus</button></td></tr>`).join("")}
+            </table>
+        </div>
+        <div class="dashboard-section">
+            <h4>🏫 Manajemen Kelas</h4>
+            <div class="form-container">
+                <h5>Tambah Kelas Baru</h5>
+                <input type="text" id="new-kelas-nama" placeholder="Nama Kelas (contoh: X IPA 1)">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                    <input type="number" step="any" id="new-kelas-lat" placeholder="Latitude" value="-7.257472">
+                    <input type="number" step="any" id="new-kelas-long" placeholder="Longitude" value="112.752090">
+                </div>
+                <p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: -0.5rem;">
+                    💡 Tip: Klik kanan di Google Maps → pilih koordinat untuk menyalin lat/long
+                </p>
+                <button onclick="tambahKelas()">Tambah Kelas</button>
+            </div>
+            <table>
+                <tr><th>ID</th><th>Nama Kelas</th><th>Lokasi</th><th>Aksi</th></tr>
+                ${data.kelas.map(k => {
+                    const lokasi = k.lokasi ? `${k.lokasi.latitude.toFixed(6)}, ${k.lokasi.longitude.toFixed(6)}` : '-';
+                    return `<tr><td>${k.id}</td><td>${k.nama}</td><td>${lokasi}</td><td><button class="small-btn delete" onclick="hapusKelas(${k.id})">Hapus</button></td></tr>`;
+                }).join("")}
             </table>
         </div>
     `;
@@ -945,6 +1030,163 @@ async function hapusSiswa(id) {
     } catch (error) {
         console.error('Error:', error);
         alert('Terjadi kesalahan saat menghapus siswa');
+    }
+}
+
+// FUNGSI BARU: TAMBAH GURU
+async function tambahGuru() {
+    const nama = document.getElementById("new-guru-nama").value;
+    const email = document.getElementById("new-guru-email").value;
+    const password = document.getElementById("new-guru-pass").value;
+    
+    if (!nama || !password) return alert("Nama dan Password harus diisi!");
+    
+    try {
+        const formData = new FormData();
+        formData.append('nama', nama);
+        formData.append('email', email);
+        formData.append('password', password);
+        
+        const response = await fetch('save_guru.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            alert(result.message);
+            
+            data.users.gurus.push({
+                id: result.id,
+                nama: nama,
+                email: email,
+                password: password,
+                jadwal: []
+            });
+            
+            renderAdminManajemen();
+            
+            // Reset form
+            document.getElementById("new-guru-nama").value = "";
+            document.getElementById("new-guru-email").value = "";
+            document.getElementById("new-guru-pass").value = "";
+        } else {
+            alert('Error: ' + result.message);
+        }
+        
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Terjadi kesalahan saat menambah guru');
+    }
+}
+
+// FUNGSI BARU: HAPUS GURU
+async function hapusGuru(id) {
+    if (!confirm("Yakin ingin menghapus guru ini?")) return;
+    
+    try {
+        const formData = new FormData();
+        formData.append('table', 'gurus');
+        formData.append('id', id);
+        
+        const response = await fetch('delete_data.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            alert(result.message);
+            data.users.gurus = data.users.gurus.filter(g => g.id !== id);
+            renderAdminManajemen();
+        } else {
+            alert('Error: ' + result.message);
+        }
+        
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Terjadi kesalahan saat menghapus guru');
+    }
+}
+
+// FUNGSI BARU: TAMBAH KELAS
+async function tambahKelas() {
+    const nama = document.getElementById("new-kelas-nama").value;
+    const latitude = document.getElementById("new-kelas-lat").value;
+    const longitude = document.getElementById("new-kelas-long").value;
+    
+    if (!nama) return alert("Nama kelas harus diisi!");
+    
+    try {
+        const formData = new FormData();
+        formData.append('nama', nama);
+        formData.append('latitude', latitude);
+        formData.append('longitude', longitude);
+        
+        const response = await fetch('save_kelas.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            alert(result.message);
+            
+            data.kelas.push({
+                id: result.id,
+                nama: nama,
+                lokasi: {
+                    latitude: parseFloat(latitude),
+                    longitude: parseFloat(longitude)
+                }
+            });
+            
+            renderAdminManajemen();
+            
+            // Reset form
+            document.getElementById("new-kelas-nama").value = "";
+            document.getElementById("new-kelas-lat").value = "-7.257472";
+            document.getElementById("new-kelas-long").value = "112.752090";
+        } else {
+            alert('Error: ' + result.message);
+        }
+        
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Terjadi kesalahan saat menambah kelas');
+    }
+}
+
+// FUNGSI BARU: HAPUS KELAS
+async function hapusKelas(id) {
+    if (!confirm("Yakin ingin menghapus kelas ini? Semua data siswa di kelas ini akan terhapus!")) return;
+    
+    try {
+        const formData = new FormData();
+        formData.append('table', 'kelas');
+        formData.append('id', id);
+        
+        const response = await fetch('delete_data.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            alert(result.message);
+            data.kelas = data.kelas.filter(k => k.id !== id);
+            renderAdminManajemen();
+        } else {
+            alert('Error: ' + result.message);
+        }
+        
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Terjadi kesalahan saat menghapus kelas');
     }
 }
 
@@ -1196,6 +1438,9 @@ async function buatPengumumanAdmin() {
                 nama_guru: "Admin",
                 tanggal: new Date().toISOString().split('T')[0]
             });
+            
+            // Kirim notifikasi ke semua siswa
+            createNotification("semua", "siswa", `Pengumuman dari Admin: ${judul}`);
             
             document.getElementById("admin-pengumuman-judul").value = "";
             document.getElementById("admin-pengumuman-isi").value = "";
